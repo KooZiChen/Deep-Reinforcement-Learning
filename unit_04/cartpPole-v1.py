@@ -45,3 +45,13 @@ print("\n _____ACTION SPACE_____ \n")
 print("The Action Space is: ", a_size)
 print("Action Space Sample", env.action_space.sample()) # Take a random action
 
+
+#Experimenting with different parameters
+# 1. learning rate
+# 2. discount rate
+# 3. number of episodes
+# 4. number of steps per episode
+# 5. epsilon
+# 6. decay rate
+
+
