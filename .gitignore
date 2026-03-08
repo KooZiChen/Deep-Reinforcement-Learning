@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.zip
+*.mp4
+token
+token.txt
+zichen
+zichen.pub
+logs/
