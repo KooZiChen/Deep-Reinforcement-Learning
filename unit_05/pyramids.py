@@ -1,74 +1,91 @@
 """
 Unit 05 - Pyramids (ML-Agents PPO + Curiosity)
-Train with:
-    mlagents-learn config/ppo/Pyramids.yaml --env=<path_to_Pyramids_exe> --run-id=Pyramids --no-graphics
-Then push to Hub by running this script after training.
+
+Just press Run. The script will:
+  1. Ask for the path to your Pyramids Unity executable
+  2. Run mlagents-learn training as a subprocess
+  3. Save the trained .onnx model locally
+  4. Push the model to HuggingFace Hub
+
+Requirements:
+  pip install mlagents huggingface_hub
 """
 
-import os
-import json
+import subprocess
 import shutil
 import tempfile
-import datetime
 from pathlib import Path
 
 from huggingface_hub import HfApi, login
 from huggingface_hub.repocard import metadata_eval_result, metadata_save
 
-# ── Config ────────────────────────────────────────────────────────────────────
-USERNAME = "TheBestMoldyCheese"
-ENV_ID = "Pyramids-v0"
+# ── Config ─────────────────────────────────────────────────────────────────────
+USERNAME      = "TheBestMoldyCheese"
+ENV_ID        = "Pyramids-v0"
 BEHAVIOR_NAME = "Pyramids"
-RUN_ID = "Pyramids"
-# Path where mlagents-learn saves the trained model
-RESULTS_DIR = Path("results") / RUN_ID / BEHAVIOR_NAME
-# The .onnx file produced by mlagents-learn
-ONNX_MODEL = RESULTS_DIR / f"{BEHAVIOR_NAME}.onnx"
-CONFIG_PATH = Path("unit_05/ml-agents/config/ppo/Pyramids.yaml")
-REPO_ID = f"{USERNAME}/ppo-{BEHAVIOR_NAME}"
+RUN_ID        = "Pyramids"
+CONFIG_PATH   = Path("unit_05/ml-agents/config/ppo/Pyramids.yaml")
+RESULTS_DIR   = Path("results") / RUN_ID / BEHAVIOR_NAME
+ONNX_MODEL    = RESULTS_DIR / f"{BEHAVIOR_NAME}.onnx"
+SAVE_DIR      = Path("unit_05/saved_models")
+REPO_ID       = f"{USERNAME}/ppo-{BEHAVIOR_NAME}"
 
-# ── Save helper ───────────────────────────────────────────────────────────────
-def save_model(src_onnx: Path, dest_dir: Path):
-    """Copy the trained .onnx model to dest_dir."""
+
+# ── Training ───────────────────────────────────────────────────────────────────
+def train(env_path: str):
+    """Launch mlagents-learn and block until training is complete."""
+    cmd = [
+        "mlagents-learn",
+        str(CONFIG_PATH),
+        f"--env={env_path}",
+        f"--run-id={RUN_ID}",
+        "--no-graphics",
+        "--force",   # overwrite previous run with same id
+    ]
+    print("\n--- Starting Training ---")
+    print("Command:", " ".join(cmd))
+    print("This will take a while. Watch the logs below...\n")
+
+    result = subprocess.run(cmd)
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"mlagents-learn exited with code {result.returncode}. "
+            "Check the logs above for errors."
+        )
+    print("\n--- Training Complete ---")
+
+
+# ── Save ───────────────────────────────────────────────────────────────────────
+def save_model(src: Path, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / src_onnx.name
-    shutil.copy2(src_onnx, dest)
+    dest = dest_dir / src.name
+    shutil.copy2(src, dest)
     print(f"Model saved to {dest}")
     return dest
 
 
-# ── Push to Hub ───────────────────────────────────────────────────────────────
-def push_to_hub(
-    repo_id: str,
-    onnx_path: Path,
-    config_path: Path,
-    env_id: str,
-    behavior_name: str,
-):
-    _, repo_name = repo_id.split("/")
+# ── Push to Hub ────────────────────────────────────────────────────────────────
+def push_to_hub(onnx_path: Path):
+    _, repo_name = REPO_ID.split("/")
     api = HfApi()
-
-    # Create / ensure repo exists
-    repo_url = api.create_repo(repo_id=repo_id, exist_ok=True)
+    repo_url = api.create_repo(repo_id=REPO_ID, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as tmp:
         local_dir = Path(tmp)
 
-        # Copy model
         shutil.copy2(onnx_path, local_dir / onnx_path.name)
+        shutil.copy2(CONFIG_PATH, local_dir / CONFIG_PATH.name)
 
-        # Copy config
-        shutil.copy2(config_path, local_dir / config_path.name)
-
-        # Metadata & model card
-        metadata = {}
-        metadata["tags"] = [
-            env_id,
-            "deep-reinforcement-learning",
-            "reinforcement-learning",
-            "ML-Agents",
-            "deep-rl-class",
-        ]
+        metadata = {
+            "tags": [
+                ENV_ID,
+                "deep-reinforcement-learning",
+                "reinforcement-learning",
+                "ML-Agents",
+                "deep-rl-class",
+            ]
+        }
 
         eval_result = metadata_eval_result(
             model_pretty_name=repo_name,
@@ -76,15 +93,15 @@ def push_to_hub(
             task_id="reinforcement-learning",
             metrics_pretty_name="mean_reward",
             metrics_id="mean_reward",
-            metrics_value="N/A",          # fill in after you evaluate
-            dataset_pretty_name=env_id,
-            dataset_id=env_id,
+            metrics_value="N/A",
+            dataset_pretty_name=ENV_ID,
+            dataset_id=ENV_ID,
         )
         metadata = {**metadata, **eval_result}
 
-        model_card = f"""# **PPO** Agent playing **{env_id}**
+        model_card = f"""# **PPO** Agent playing **{ENV_ID}**
 
-This is a trained model of a **PPO** agent playing **{env_id}** using the
+This is a trained model of a **PPO** agent playing **{ENV_ID}** using the
 [ML-Agents](https://github.com/Unity-Technologies/ml-agents) library.
 
 To learn how to train your own agent check Unit 5 of the Deep Reinforcement
@@ -93,48 +110,52 @@ https://huggingface.co/deep-rl-course/unit5/introduction
 
 ## Training details
 - Trainer: PPO with Curiosity reward signal
-- Config: `{config_path.name}`
-- Trained with: `mlagents-learn {config_path} --env=<Pyramids_exe> --run-id={behavior_name} --no-graphics`
+- Config: `{CONFIG_PATH.name}`
+- Run ID: `{RUN_ID}`
+- Max steps: 10,000,000
 
 ## Usage
-Load the `.onnx` model in the Unity Pyramids environment via the
-ML-Agents inference mode.
+Load the `.onnx` model in the Unity Pyramids environment via ML-Agents inference mode.
 """
 
         readme_path = local_dir / "README.md"
         readme_path.write_text(model_card, encoding="utf-8")
         metadata_save(readme_path, metadata)
 
-        # Upload
         api.upload_folder(
-            repo_id=repo_id,
+            repo_id=REPO_ID,
             folder_path=local_dir,
             path_in_repo=".",
         )
 
-    print(f"Model pushed to Hub: {repo_url}")
+    print(f"\nModel pushed to Hub: {repo_url}")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    if not ONNX_MODEL.exists():
-        print(f"[ERROR] Trained model not found at: {ONNX_MODEL}")
-        print("Train first with:")
-        print(
-            f"  mlagents-learn {CONFIG_PATH} "
-            f"--env=<path_to_Pyramids_exe> --run-id={RUN_ID} --no-graphics"
-        )
-    else:
-        # Save a local copy
-        save_dir = Path("unit_05/saved_models")
-        save_model(ONNX_MODEL, save_dir)
+    # Step 1: get Unity exe path
+    env_path = input(
+        "Enter the path to your Pyramids Unity executable\n"
+        "(e.g. C:/builds/Pyramids/Pyramids.exe): "
+    ).strip()
 
-        # Push to Hub
-        login()
-        push_to_hub(
-            repo_id=REPO_ID,
-            onnx_path=ONNX_MODEL,
-            config_path=CONFIG_PATH,
-            env_id=ENV_ID,
-            behavior_name=BEHAVIOR_NAME,
-        )
+    if not Path(env_path).exists():
+        print(f"[ERROR] File not found: {env_path}")
+        exit(1)
+
+    # Step 2: train
+    train(env_path)
+
+    # Step 3: verify model was produced
+    if not ONNX_MODEL.exists():
+        print(f"[ERROR] Expected model not found at {ONNX_MODEL}")
+        print("Training may have failed — check logs above.")
+        exit(1)
+
+    # Step 4: save locally
+    save_model(ONNX_MODEL, SAVE_DIR)
+
+    # Step 5: push to Hub
+    print("\nLogging in to Hugging Face...")
+    login()
+    push_to_hub(ONNX_MODEL)
