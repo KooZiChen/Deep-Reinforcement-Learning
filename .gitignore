@@ -7,3 +7,5 @@ token.txt
 zichen
 zichen.pub
 logs/
+.claude/
+unit_03/manual_upload.py
