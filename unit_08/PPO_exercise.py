@@ -101,7 +101,52 @@ PHASE 4: THE REPEAT
 """
 
 
-def layer_init(layer , std = np.sqrt(2) , bias_const = 0.0){
-    
-}
+def layer_init(layer , std = np.sqrt(2) , bias_const = 0.0): # the std scales the eigenvalues from 1 to std . Thus,  var = std^2 . For ReLu/tanh hidden layers : std = sqrt(2) compensates for the ~50% variance reduction (signal attenuation) caused by the activation's non-linearity, maintaining a stable forward-pass of variance of 1.0
+    nn.init.orthogonal_(layer.weight , std)  # Orthogonal initialization is a method of initializing the weights of a neural network such that the weight matrices are orthogonal. This helps to prevent the vanishing or exploding gradient problem during training.
+    nn.init.constant_(layer.bias , bias_const)  # Constant initialization is a method of initializing the weights of a neural network such that the weights are all set to the same constant value. This is often used for the bias terms of the neural network.
+    return layer
 
+class Agent(nn.Module):
+    def __init__ (self , envs):
+        super().__init__()
+        obs_dim = np.array(envs.single_observation_space.shape).prod() # prod() is used to calculate the product of all the elements in the array. In this case, it is used to calculate the product of all the elements in the observation space of the environment.
+        act_dim = envs.single_action_space.n # n is used to get the number of actions in the environment.
+
+        self.critic = nn.Sequential(
+            layer_init(nn.Linear(obs_dim , 64)), # The first layer takes the observation as input and outputs 64 values.
+            nn.Tanh(), # The Tanh activation function squashes the output of the first layer to a range of -1 to 1.
+            layer_init(nn.Linear(64 , 64)), # The second layer takes the output of the first layer and outputs 64 values.
+            nn.Tanh(), # The Tanh activation function squashes the output of the second layer to a range of -1 to 1.
+            layer_init(nn.Linear(64 , 1) , std = 1.0), # The third layer takes the output of the second layer and outputs 1 value.
+        )
+        self.actor = nn.Sequential(
+            layer_init(nn.Linear(obs_dim , 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64 , 64)),
+            nn.Tanh(),
+            layer_init(nn.Linear(64 , act_dim) , std = 0.01),
+        )
+
+    def get_value(self , x):
+        return self.critic(x)
+
+    def get_action_and_value(self , x , action = None):
+        logits = self.actor(x)
+        dist = Categorical(logits = logits)
+        if action is None:
+            action = dist.sample()
+        return action , dist.log_prob(action) , dist.entropy() , self.critic(x)
+
+
+
+def train(args : Args) : 
+    args.batch_size = args.num_steps * args.num_envs
+    args.minibatch_size = args.batch_size // args.
+
+
+
+
+
+if __name__ == "__main__":
+    args = Args()
+    train(args)
