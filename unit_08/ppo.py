@@ -4,9 +4,7 @@ Environment: LunarLander-v2
 Reference: https://huggingface.co/learn/deep-rl-course/unit8/hands-on-cleanrl
 """
 
-import os
 import random
-import time
 from dataclasses import dataclass
 
 import gymnasium as gym
@@ -15,7 +13,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
-from torch.utils.tensorboard import SummaryWriter
 
 
 # ── Hyperparameters ────────────────────────────────────────────────────────────
@@ -93,10 +90,9 @@ class Agent(nn.Module):
 
 # ── Training ───────────────────────────────────────────────────────────────────
 
-def make_env(env_id, seed, idx, run_name):
+def make_env(env_id, seed, idx):
     def thunk():
         env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
         env.action_space.seed(seed + idx)
         return env
     return thunk
@@ -105,11 +101,6 @@ def make_env(env_id, seed, idx, run_name):
 def train(args: Args):
     args.batch_size = args.num_envs * args.num_steps
     args.minibatch_size = args.batch_size // args.num_minibatches
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text("hyperparameters", "|param|value|\n|-|-|\n" +
-                    "\n".join([f"|{k}|{v}|" for k, v in vars(args).items()]))
 
     # seeding
     random.seed(args.seed)
@@ -118,11 +109,10 @@ def train(args: Args):
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-    print(f"Using device: {device}")
 
     # envs
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed, i, run_name) for i in range(args.num_envs)]
+        [make_env(args.env_id, args.seed, i) for i in range(args.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete)
 
@@ -137,8 +127,6 @@ def train(args: Args):
     dones    = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values   = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
-    global_step = 0
-    start_time = time.time()
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs  = torch.tensor(next_obs, dtype=torch.float32).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
@@ -153,7 +141,6 @@ def train(args: Args):
 
         # ── collect rollout ────────────────────────────────────────────────────
         for step in range(args.num_steps):
-            global_step += args.num_envs
             obs[step]  = next_obs
             dones[step] = next_done
 
@@ -163,18 +150,11 @@ def train(args: Args):
             actions[step]  = action
             logprobs[step] = logprob
 
-            next_obs_np, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
+            next_obs_np, reward, terminated, truncated, _ = envs.step(action.cpu().numpy())
             done = np.logical_or(terminated, truncated)
             rewards[step] = torch.tensor(reward, dtype=torch.float32).to(device)
             next_obs  = torch.tensor(next_obs_np, dtype=torch.float32).to(device)
             next_done = torch.tensor(done, dtype=torch.float32).to(device)
-
-            if "final_info" in infos:
-                for info in infos["final_info"]:
-                    if info and "episode" in info:
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']:.2f}")
-                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
         # ── GAE ────────────────────────────────────────────────────────────────
         with torch.no_grad():
@@ -202,7 +182,6 @@ def train(args: Args):
 
         # ── PPO update ─────────────────────────────────────────────────────────
         b_inds = np.arange(args.batch_size)
-        clipfracs = []
 
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
@@ -217,9 +196,7 @@ def train(args: Args):
                 ratio = logratio.exp()
 
                 with torch.no_grad():
-                    old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
 
                 mb_advantages = b_advantages[mb_inds]
                 if args.norm_adv:
@@ -253,24 +230,9 @@ def train(args: Args):
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
 
-        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
-        var_y = np.var(y_true)
-        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-
-        writer.add_scalar("charts/learning_rate",       optimizer.param_groups[0]["lr"], global_step)
-        writer.add_scalar("losses/value_loss",          v_loss.item(),                   global_step)
-        writer.add_scalar("losses/policy_loss",         pg_loss.item(),                  global_step)
-        writer.add_scalar("losses/entropy",             entropy_loss.item(),             global_step)
-        writer.add_scalar("losses/approx_kl",           approx_kl.item(),                global_step)
-        writer.add_scalar("losses/clipfrac",            np.mean(clipfracs),              global_step)
-        writer.add_scalar("losses/explained_variance",  explained_var,                   global_step)
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)),  global_step)
-
-        if update % 10 == 0:
-            print(f"Update {update}/{num_updates} | SPS: {int(global_step / (time.time() - start_time))}")
+        # Metrics/logging removed to keep script focused on core PPO updates.
 
     envs.close()
-    writer.close()
     return agent, args
 
 
@@ -278,10 +240,4 @@ def train(args: Args):
 
 if __name__ == "__main__":
     args = Args()
-    agent, args = train(args)
-
-    # save model
-    os.makedirs("models", exist_ok=True)
-    model_path = f"models/{args.exp_name}.pt"
-    torch.save(agent.state_dict(), model_path)
-    print(f"Model saved to {model_path}")
+    train(args)

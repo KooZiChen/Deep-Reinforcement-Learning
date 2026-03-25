@@ -137,8 +137,6 @@ class Agent(nn.Module):
             action = dist.sample()
         return action , dist.log_prob(action) , dist.entropy() , self.critic(x)
 
-def make_env(env_id , index , )
-
 def train(args : Args) : 
     args.batch_size = args.num_steps * args.num_envs
     args.minibatch_size = args.batch_size // args.num_minibatches
