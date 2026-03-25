@@ -137,12 +137,22 @@ class Agent(nn.Module):
             action = dist.sample()
         return action , dist.log_prob(action) , dist.entropy() , self.critic(x)
 
-
+def make_env(env_id , index , )
 
 def train(args : Args) : 
     args.batch_size = args.num_steps * args.num_envs
-    args.minibatch_size = args.batch_size // args.
+    args.minibatch_size = args.batch_size // args.num_minibatches
+    
+    random.seed(args.seed)
+    np.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.backends.cudnn.deterministic = args.torch_deterministic
+    
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(args.env_id, args.seed, i) for i in range(args.num_envs)]
+    )
 
 
 
