@@ -14,7 +14,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
 
-
 # ── Hyperparameters ────────────────────────────────────────────────────────────
 
 @dataclass
@@ -82,7 +81,7 @@ class Agent(nn.Module):
 
     def get_action_and_value(self, x, action=None):
         logits = self.actor(x)
-        dist = Categorical(logits=logits)
+        dist = Categorical(logits=logits) # Convert into probabilities using softmax 
         if action is None:
             action = dist.sample()
         return action, dist.log_prob(action), dist.entropy(), self.critic(x)
@@ -114,6 +113,8 @@ def train(args: Args):
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, args.seed, i) for i in range(args.num_envs)]
     )
+    
+    print(envs)
     assert isinstance(envs.single_action_space, gym.spaces.Discrete)
 
     agent = Agent(envs).to(device)
@@ -127,7 +128,7 @@ def train(args: Args):
     dones    = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values   = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
-    next_obs, _ = envs.reset(seed=args.seed)
+    next_obs, _ = envs.reset(seed=[args.seed + i for i in range(args.num_envs)])    
     next_obs  = torch.tensor(next_obs, dtype=torch.float32).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
@@ -185,16 +186,15 @@ def train(args: Args):
 
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
-            for start in range(0, args.batch_size, args.minibatch_size):
+            for start in range(0, args.batch_size, args.minibatch_size):  #Slices by minibatch size
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(
-                    b_obs[mb_inds], b_actions.long()[mb_inds]
+                    b_obs[mb_inds], b_actions.long()[mb_inds]   # We must convert the action into 
                 )
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
-
                 with torch.no_grad():
                     approx_kl = ((ratio - 1) - logratio).mean()
 
@@ -223,7 +223,7 @@ def train(args: Args):
                 loss = pg_loss - args.ent_coef * entropy_loss + args.vf_coef * v_loss
 
                 optimizer.zero_grad()
-                loss.backward()
+                loss.backward()  # backward function can only take one scalar value
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
 

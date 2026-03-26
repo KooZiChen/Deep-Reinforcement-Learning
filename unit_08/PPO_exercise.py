@@ -1,12 +1,12 @@
 from dataclasses import dataclass
 
-import random 
-import numpy as np 
+import random
+import numpy as np
 
-import gymnasium as gym 
+import gymnasium as gym
 import torch
 import torch.nn as nn
-import torch.optim as optim 
+import torch.optim as optim
 import torch.distributions.categorical as Categorical
 
 
@@ -15,37 +15,71 @@ class Args:
     exp_name: str = "ppo-LunarLander-v3"
     env_id: str = "LunarLander-v3"
     seed: int = 1  # Starting number given to the Pseudorandom Number Generator
-    torch_deterministic: bool = True  # If True, forces the GPU to use slower, reproducible math algorithms. This forces the GPU kernels to use a fixed math order to ensure bith level reproducibility
-    cuda: bool = True  # If True, the CPU moves the neural network and rollout data to the VRAM for fast calculation
+    torch_deterministic: bool = (
+        True  # If True, forces the GPU to use slower, reproducible math algorithms. This forces the GPU kernels to use a fixed math order to ensure bith level reproducibility
+    )
+    cuda: bool = (
+        True  # If True, the CPU moves the neural network and rollout data to the VRAM for fast calculation
+    )
 
     # PPO
     # The Rollout Phase ( Collection Phase )
-    total_timesteps: int = 500_000  # Total number of steps to train for (the training stops once the total steps is reached)
-    num_steps: int = 128  # Each environment plays for 128 steps before the CPU pauses to send that data to the VRAM for an update
+    total_timesteps: int = (
+        500_000  # Total number of steps to train for (the training stops once the total steps is reached)
+    )
+    num_steps: int = (
+        128  # Each environment plays for 128 steps before the CPU pauses to send that data to the VRAM for an update
+    )
     num_envs: int = 4  # The number of parallel environments running at once
 
     # The Parameter
     learning_rate: float = 2.5e-4
-    anneal_lr: bool = True  # The agents starts learning fast and slowly cools down its learning speed as it gets closer to the end of the training
-    gamma: float = 0.99  # Discount factor， the agent cares a lot about future reward ( landing safely ) rather than just immediate rewards ( not crashing right now)
-    gae_lambda: float = 0.95  # Generalized Advantage Estimation， a method to reduce the variance of the advantage estimates
-    update_epochs: int = 4  # Once the data is in the VRAM , how many times the GPU should re-read that same data to learn from it. Here , it looks at the data 4 times
-    num_minibatches: int = 4  # Instead of calculating the gradient for all data at once , the GPU splits the rollout data into 4 smaller chunks to save VRAM and improve stability
+    anneal_lr: bool = (
+        True  # The agents starts learning fast and slowly cools down its learning speed as it gets closer to the end of the training
+    )
+    gamma: float = (
+        0.99  # Discount factor， the agent cares a lot about future reward ( landing safely ) rather than just immediate rewards ( not crashing right now)
+    )
+    gae_lambda: float = (
+        0.95  # Generalized Advantage Estimation， a method to reduce the variance of the advantage estimates
+    )
+    update_epochs: int = (
+        4  # Once the data is in the VRAM , how many times the GPU should re-read that same data to learn from it. Here , it looks at the data 4 times
+    )
+    num_minibatches: int = (
+        4  # Instead of calculating the gradient for all data at once , the GPU splits the rollout data into 4 smaller chunks to save VRAM and improve stability
+    )
 
     # Policy stability
-    norm_adv: bool = True  # Normalizes the advantage ( How much better an action was than average) . This keeps the math stable
-    clip_coef: float = 0.2  # The "Clipping" in PPO. It prevents the new policy from changing too drastically from the old one
-    clip_vloss: bool = True  # If True , it clips the value loss function to prevent large updates to the critic
-    ent_coef: float = 0.01  # Entropy coefficient. It encourages exploration by penalizing the agent for being too certain
-    vf_coef: float = 0.5  # Value function coefficient. It weights the value loss in the total loss. Also means how much the value function (predicting score) matters compared to the policy ( choosing actions)
+    norm_adv: bool = (
+        True  # Normalizes the advantage ( How much better an action was than average) . This keeps the math stable
+    )
+    clip_coef: float = (
+        0.2  # The "Clipping" in PPO. It prevents the new policy from changing too drastically from the old one
+    )
+    clip_vloss: bool = (
+        True  # If True , it clips the value loss function to prevent large updates to the critic
+    )
+    ent_coef: float = (
+        0.01  # Entropy coefficient. It encourages exploration by penalizing the agent for being too certain
+    )
+    vf_coef: float = (
+        0.5  # Value function coefficient. It weights the value loss in the total loss. Also means how much the value function (predicting score) matters compared to the policy ( choosing actions)
+    )
     max_grad_norm: float = (
         0.5  # Gradient clipping. It prevents the gradients from becoming too large
     )
-    target_kl: float = None  # Target KL divergence. If set , it stops training if the KL divergence exceeds this value
+    target_kl: float = (
+        None  # Target KL divergence. If set , it stops training if the KL divergence exceeds this value
+    )
 
     # derived (set in main)
-    batch_size: int = 0  # Total number of steps collected per update (num_envs * num_steps) // the total amount of data the GPU sees in one learning cycle which is 4 x 128
-    minibatch_size: int = 0  # Size of each minibatch (batch_size // num_minibatches) // the size of the chunks sent to the GPU cores 512/4 = 128
+    batch_size: int = (
+        0  # Total number of steps collected per update (num_envs * num_steps) // the total amount of data the GPU sees in one learning cycle which is 4 x 128
+    )
+    minibatch_size: int = (
+        0  # Size of each minibatch (batch_size // num_minibatches) // the size of the chunks sent to the GPU cores 512/4 = 128
+    )
 
     """
 TRAINING WORKFLOW DETAILED SEQUENCE:
@@ -101,60 +135,213 @@ PHASE 4: THE REPEAT
 """
 
 
-def layer_init(layer , std = np.sqrt(2) , bias_const = 0.0): # the std scales the eigenvalues from 1 to std . Thus,  var = std^2 . For ReLu/tanh hidden layers : std = sqrt(2) compensates for the ~50% variance reduction (signal attenuation) caused by the activation's non-linearity, maintaining a stable forward-pass of variance of 1.0
-    nn.init.orthogonal_(layer.weight , std)  # Orthogonal initialization is a method of initializing the weights of a neural network such that the weight matrices are orthogonal. This helps to prevent the vanishing or exploding gradient problem during training.
-    nn.init.constant_(layer.bias , bias_const)  # Constant initialization is a method of initializing the weights of a neural network such that the weights are all set to the same constant value. This is often used for the bias terms of the neural network.
+def layer_init(
+    layer, std=np.sqrt(2), bias_const=0.0
+):  # the std scales the eigenvalues from 1 to std . Thus,  var = std^2 . For ReLu/tanh hidden layers : std = sqrt(2) compensates for the ~50% variance reduction (signal attenuation) caused by the activation's non-linearity, maintaining a stable forward-pass of variance of 1.0
+    nn.init.orthogonal_(
+        layer.weight, std
+    )  # Orthogonal initialization is a method of initializing the weights of a neural network such that the weight matrices are orthogonal. This helps to prevent the vanishing or exploding gradient problem during training.
+    nn.init.constant_(
+        layer.bias, bias_const
+    )  # Constant initialization is a method of initializing the weights of a neural network such that the weights are all set to the same constant value. This is often used for the bias terms of the neural network.
     return layer
 
+
 class Agent(nn.Module):
-    def __init__ (self , envs):
+    def __init__(self, envs):
         super().__init__()
-        obs_dim = np.array(envs.single_observation_space.shape).prod() # prod() is used to calculate the product of all the elements in the array. In this case, it is used to calculate the product of all the elements in the observation space of the environment.
-        act_dim = envs.single_action_space.n # n is used to get the number of actions in the environment.
+        obs_dim = np.array(
+            envs.single_observation_space.shape
+        ).prod()  # prod() is used to calculate the product of all the elements in the array. In this case, it is used to calculate the product of all the elements in the observation space of the environment.
+        act_dim = (
+            envs.single_action_space.n
+        )  # n is used to get the number of actions in the environment.
 
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(obs_dim , 64)), # The first layer takes the observation as input and outputs 64 values.
-            nn.Tanh(), # The Tanh activation function squashes the output of the first layer to a range of -1 to 1.
-            layer_init(nn.Linear(64 , 64)), # The second layer takes the output of the first layer and outputs 64 values.
-            nn.Tanh(), # The Tanh activation function squashes the output of the second layer to a range of -1 to 1.
-            layer_init(nn.Linear(64 , 1) , std = 1.0), # The third layer takes the output of the second layer and outputs 1 value.
+            layer_init(
+                nn.Linear(obs_dim, 64)
+            ),  # The first layer takes the observation as input and outputs 64 values.
+            nn.Tanh(),  # The Tanh activation function squashes the output of the first layer to a range of -1 to 1.
+            layer_init(
+                nn.Linear(64, 64)
+            ),  # The second layer takes the output of the first layer and outputs 64 values.
+            nn.Tanh(),  # The Tanh activation function squashes the output of the second layer to a range of -1 to 1.
+            layer_init(
+                nn.Linear(64, 1), std=1.0
+            ),  # The third layer takes the output of the second layer and outputs 1 value.
         )
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(obs_dim , 64)),
+            layer_init(nn.Linear(obs_dim, 64)),
             nn.Tanh(),
-            layer_init(nn.Linear(64 , 64)),
+            layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
-            layer_init(nn.Linear(64 , act_dim) , std = 0.01),
+            layer_init(nn.Linear(64, act_dim), std=0.01),
         )
 
-    def get_value(self , x):
+    def get_value(self, x):
         return self.critic(x)
 
-    def get_action_and_value(self , x , action = None):
+    def get_action_and_value(self, x, action=None):
         logits = self.actor(x)
-        dist = Categorical(logits = logits)
+        dist = Categorical(logits=logits)  #softmax function
         if action is None:
             action = dist.sample()
-        return action , dist.log_prob(action) , dist.entropy() , self.critic(x)
+        return action, dist.log_prob(action), dist.entropy(), self.critic(x)
 
-def train(args : Args) : 
+
+def make_env(env_id, seed, idx):
+    def thunk():
+        env = gym.make(env_id)
+        env.action_space.seed(seed + idx)
+        return env
+
+    return thunk
+
+
+def train(args: Args):
     args.batch_size = args.num_steps * args.num_envs
     args.minibatch_size = args.batch_size // args.num_minibatches
-    
+
     random.seed(args.seed)
-    np.seed(args.seed)
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
-    
+
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, args.seed, i) for i in range(args.num_envs)]
     )
+    
+    assert isinstance(envs.single_action_space, gym.spaces.Discrete)
 
+    agent = Agent(envs).to(device)
+    optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    
+    # rollout storage
+    obs      = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
+    actions  = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
+    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    rewards  = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    dones    = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    values   = torch.zeros((args.num_steps, args.num_envs)).to(device)  
 
+    next_obs, _ = envs.reset(seed=args.seed)  #The initial environment , this returns (4,8)
+    next_obs  = torch.tensor(next_obs, dtype=torch.float32).to(device) # Turn the tuple into Pytorch Tensor
+    next_done = torch.zeros(args.num_envs).to(device)
+    
+    num_updates = args.total_timesteps // args.batch_size
 
+    for update in range(1 , num_updates + 1):
+        #learning rate annealing 
+        if args.anneal_lr:
+            frac = 1.0 - (update - 1.0) / num_updates
+            optimizer.param_groups[0]["lr"] = frac * args.learning_rate  # the learning rate of the optimizer is decreasing 
+            
+            #--------Collect Rollout--------
+            #This is the rollout 
+        for step in range(args.num_steps):
+                obs[step] = next_obs
+                dones[step] = next_done
+                
+            
+                with torch.no_grad():  # Run code without tracking gradients (We dont track gradient over here)
+                  action , logprob , _ , value = agent.get_action_and_value(next_obs)              
+                  values[step] = value
+                action[step] = action
+                logprobs[step] = logprob
+            
+                #Execute the Game and log data
+                next_obs_np, reward_np, termination , truncated ,  info = envs.step(action.cpu().numpy())   # NN runs on GPU which produces action as CUDA tensor , so we have to move it from GPU VRAM to CPU RAM , then convert Pytorch Tensor to Numpy array and pass it to the step function
+                done = np.logical_or(termination , truncated)
+                rewards[step] = torch.tensor(reward_np , dtype = torch.float32).to(device)
+                next_obs = torch.tensor(next_obs_np , dtype = torch.float32).to(device)
+                next_done = torch.tensor(done , dtype= torch.float32).to(device)
+            
+            
+        #General Advantage Estimation // Advantage Function 
+        with torch.no_grad():
+            next_value = agent.get_value(next_obs).reshape(1, -1)
+            advantages = torch.zeros_like(rewards).to(device)
+            lastgaelam = 0
+            for t in reversed(range(args.num_steps)):
+                if t == args.num_steps - 1:
+                    nextnonterminal = 1.0 - next_done
+                    nextvalues = next_value
+                else:
+                    nextnonterminal = 1.0 - dones[t + 1]
+                    nextvalues = values[t + 1]
+                delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
+                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+            returns = advantages + values
+    
+    #Flattening rollout data into one training batch so PPO can sample random minibatches
+    b_obs      = obs.reshape((-1,) + envs.single_observation_space.shape)
+    b_logprobs = logprobs.reshape(-1)
+    b_actions  = actions.reshape((-1,) + envs.single_action_space.shape)
+    b_advantages = advantages.reshape(-1)
+    b_returns  = returns.reshape(-1)
+    b_values   = values.reshape(-1) 
+    
+    
+    #PPO Update
+    b_inds = np.arange(args.batch_size)
+    
+    for epoch in range (args.update_epochs) : 
+        np.random.shuffle(b_inds)
+        for start in range(0 , args.batch_size , args.minibatch_size):
+            end = start + args.minibatch_size
+            mb_inds = b_inds[start : end]
+            
+            _ , newlogprob , entropy , newvalue =  agent.get_action_and_value(obs[mb_inds] , action.long()[mb_inds])
+            logratio = newlogprob - b_logprobs[mb_inds]
+            ratio = logratio.exp()
+            with torch.no_grad() : 
+                approx_kl = ((ratio - 1) - logratio).mean()
+            mb_advantages = b_advantages[mb_inds]
+            if args.norm_adv:
+                mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)                
+            
+            #Policy Loss , optimizer try to minimize the policy loss which in turn maximize the objective function 
+            pg_loss1 = -mb_advantages * ratio
+            pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+            pg_loss  = torch.max(pg_loss1, pg_loss2).mean()
+                            
+         # value loss
+        newvalue = newvalue.view(-1)
+        if args.clip_vloss:
+            v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
+            v_clipped = b_values[mb_inds] + torch.clamp(
+                newvalue - b_values[mb_inds], -args.clip_coef, args.clip_coef
+            )
+            v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+            v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+        else:
+            v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+
+        entropy_loss = entropy.mean()
+        loss = pg_loss - args.ent_coef * entropy_loss + args.vf_coef * v_loss
+
+        optimizer.zero_grad()
+        loss.backward()  # Runs backpropagation and computes gradient of loss wrt model parameters , it expects a scalar loss.
+        nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm) # clips gradient norm to avoid exploding gradients and make training more stable ， prevent the weight from becoming too heavy
+        optimizer.step()  # Applies the optimizer update ( Adam ) , moving parameters in the direction that reduces loss
+        
+        if args.target_kl is not None and approx_kl > args.target_kl:
+            break   
+    
+    envs.close()
+    return agent , args       
+            
+                
+
+            
+        
+    
 
 if __name__ == "__main__":
     args = Args()
     train(args)
+
+
+ 
